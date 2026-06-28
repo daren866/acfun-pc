@@ -1,0 +1,351 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>AcFun</title>
+    <link rel="stylesheet" href="index.css" />
+    <style>
+      /* 调试信息显示区域样式 */
+      .debug-panel {
+        position: fixed;
+        bottom: 0;
+        right: 0;
+        width: 400px;
+        height: 300px;
+        background: rgba(0, 0, 0, 0.8);
+        color: #fff;
+        border-top-left-radius: 8px;
+        padding: 10px;
+        font-family: monospace;
+        font-size: 12px;
+        overflow-y: auto;
+        z-index: 1000;
+      }
+      .debug-panel h3 {
+        margin: 0 0 10px 0;
+        color: #4ade80;
+      }
+      .debug-message {
+        margin: 5px 0;
+        padding: 3px;
+        border-left: 3px solid #60a5fa;
+      }
+      .debug-message.error {
+        border-left-color: #f87171;
+      }
+      .debug-message.success {
+        border-left-color: #4ade80;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo"><img src="acfunguilogo.svg" alt="AcFun" /></div>
+      <div class="search"><input type="text" placeholder="搜索" /><button class="search-btn"></button></div>
+    </header>
+    <div class="layout">
+      <aside class="sidebar">
+        <nav class="sidebar-nav"><a href="#" class="nav-item active" title="首页"><span class="nav-icon home-icon"></span></a></nav>
+        <div class="sidebar-bottom"><div class="login-btn" id="loginBtn" title="登录"></div></div>
+      </aside>
+      <main>
+        <div class="video-grid" id="videoGrid"></div>
+        <div class="loading" id="loading">加载中...</div>
+      </main>
+    </div>
+    <div class="login-overlay" id="loginOverlay" style="display: none;">
+      <div class="login-modal">
+        <div class="modal-header"><h2 id="modalTitle">登录</h2><button class="close-btn" id="closeLoginBtn">×</button></div>
+        <div class="modal-body" id="loginForm">
+          <div class="form-group"><input type="text" id="loginUsername" placeholder="用户名或手机" /></div>
+          <div class="form-group"><input type="password" id="loginPassword" placeholder="密码" /></div>
+          <button class="login-submit-btn" id="submitLoginBtn">登录</button>
+          <p class="error-message" id="loginError"></p>
+        </div>
+        <div class="modal-body" id="loginSuccess" style="display: none; flex-direction: column; align-items: center; gap: 15px;">
+          <div class="avatar-circle" style="width: 80px; height: 80px; border-radius: 50%; overflow: hidden;">
+            <img id="userAvatar" src="" alt="头像" style="width: 100%; height: 100%; object-fit: cover;" />
+          </div>
+          <p class="welcome-message" id="welcomeMessage" style="font-size: 16px; font-weight: bold;">用户名，欢迎回来！</p>
+          <button class="login-submit-btn" id="logoutBtn" style="background-color: #fd4c5d; margin-top: 10px;">退出登录</button>
+        </div>
+      </div>
+    </div>
+    <!-- 调试信息显示面板 -->
+    <div class="debug-panel" id="debugPanel" style="display: none;">
+      <h3>📱 视频调试信息</h3>
+      <div id="debugMessages"></div>
+    </div>
+    <script>
+      const videoGrid = document.getElementById('videoGrid');
+      const loadingEl = document.getElementById('loading');
+      let isLoading = false;
+      let currentUser = null;
+
+      // 调试信息显示
+      const debugPanel = document.getElementById('debugPanel');
+      const debugMessages = document.getElementById('debugMessages');
+
+      function addDebugMessage(message, type = 'info') {
+        const msgEl = document.createElement('div');
+        msgEl.className = `debug-message ${type}`;
+        msgEl.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        debugMessages.appendChild(msgEl);
+        debugMessages.scrollTop = debugMessages.scrollHeight;
+      }
+
+      // 接收视频页面的调试信息
+      window.debugAPI.onDebugInfo((info) => {
+        console.log('收到调试信息:', info);
+        let message = '';
+        
+        switch (info.type) {
+          case 'api_st_extracted':
+            message = `API_ST 提取成功: ${info.apiSt.substring(0, 20)}...`;
+            break;
+          case 'like_check_error':
+            message = `点赞状态检查失败: ${info.error}`;
+            break;
+          case 'like_operation_failed':
+            message = `点赞操作失败: ${info.error}`;
+            break;
+          case 'like_operation_success':
+            message = `点赞操作成功: ${info.action} ${info.videoId}`;
+            break;
+          case 'comments_load_failed':
+            message = `评论加载失败: ${info.error}`;
+            break;
+          default:
+            message = `未知调试信息: ${JSON.stringify(info)}`;
+        }
+        
+        addDebugMessage(message, info.type.includes('error') ? 'error' : 'success');
+      });
+
+      function createVideoCard(video) {
+        const card = document.createElement('div');
+        card.className = 'video-card';
+
+        const thumbnail = document.createElement('div');
+        thumbnail.className = 'thumbnail';
+        if (video.coverUrl) {
+          thumbnail.style.backgroundImage = `url(${video.coverUrl})`;
+          thumbnail.style.backgroundSize = 'cover';
+          thumbnail.style.backgroundPosition = 'center';
+        }
+
+        const title = document.createElement('h3');
+        title.textContent = video.title || '视频标题';
+
+        const uploader = document.createElement('p');
+        uploader.textContent = `up: ${video.upName || 'UP主名称'}`;
+
+        card.appendChild(thumbnail);
+        card.appendChild(title);
+        card.appendChild(uploader);
+
+        card.addEventListener('click', async () => {
+          await window.feedAPI.openVideo(video);
+        });
+
+        return card;
+      }
+
+      function renderVideos(videos) {
+        videos.forEach((video) => {
+          videoGrid.appendChild(createVideoCard(video));
+        });
+      }
+
+      async function loadFeed() {
+        if (isLoading) return;
+        isLoading = true;
+        loadingEl.style.display = 'block';
+        try {
+          const videos = await window.feedAPI.loadMore();
+          if (videos && videos.length > 0) {
+            renderVideos(videos);
+          } else {
+            loadingEl.textContent = '没有更多内容了';
+          }
+        } catch (error) {
+          loadingEl.textContent = '加载失败，请稍后重试';
+        }
+        isLoading = false;
+        loadingEl.style.display = 'none';
+      }
+
+      async function init() {
+        loadingEl.style.display = 'block';
+        try {
+          const videos = await window.feedAPI.init();
+          if (videos && videos.length > 0) {
+            renderVideos(videos);
+          }
+        } catch (error) {
+          console.error('初始化失败:', error);
+        }
+        loadingEl.style.display = 'none';
+      }
+
+      window.addEventListener('scroll', () => {
+        const scrollTop = window.scrollY;
+        const windowHeight = window.innerHeight;
+        const documentHeight = document.documentElement.scrollHeight;
+        if (scrollTop + windowHeight >= documentHeight - 200) {
+          loadFeed();
+        }
+      });
+
+      // ==================== 登录态 UI ====================
+
+      const loginBtn = document.getElementById('loginBtn');
+      const loginOverlay = document.getElementById('loginOverlay');
+      const closeLoginBtn = document.getElementById('closeLoginBtn');
+      const loginForm = document.getElementById('loginForm');
+      const loginSuccess = document.getElementById('loginSuccess');
+      const submitLoginBtn = document.getElementById('submitLoginBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+      const loginUsername = document.getElementById('loginUsername');
+      const loginPassword = document.getElementById('loginPassword');
+      const loginError = document.getElementById('loginError');
+      const welcomeMessage = document.getElementById('welcomeMessage');
+      const userAvatar = document.getElementById('userAvatar');
+      const modalTitle = document.getElementById('modalTitle');
+
+      function applyLoggedInState(user) {
+        currentUser = user;
+        
+        loginBtn.title = user.username || '已登录';
+        loginBtn.style.cursor = 'pointer';
+        loginBtn.innerHTML = '';
+        
+        if (user.avatar) {
+          loginBtn.style.backgroundImage = `url(${user.avatar})`;
+          loginBtn.style.backgroundSize = 'cover';
+          loginBtn.style.backgroundPosition = 'center';
+          loginBtn.style.backgroundRepeat = 'no-repeat';
+          loginBtn.style.borderRadius = '50%';
+          loginBtn.style.border = '2px solid #fd4c5d';
+        }
+
+        welcomeMessage.textContent = `${user.username || '用户'}，欢迎回来！`;
+        if (user.avatar) {
+          userAvatar.src = user.avatar;
+        }
+      }
+
+      function applyLoggedOutState() {
+        currentUser = null;
+        
+        loginBtn.title = '登录';
+        loginBtn.style.cursor = 'pointer';
+        loginBtn.style.backgroundImage = '';
+        loginBtn.style.borderRadius = '';
+        loginBtn.style.border = '';
+        loginBtn.className = 'login-btn'; 
+
+        loginUsername.value = '';
+        loginPassword.value = '';
+        loginError.style.display = 'none';
+      }
+
+      loginBtn.addEventListener('click', () => {
+        loginOverlay.style.display = 'flex';
+        if (currentUser) {
+          modalTitle.textContent = '个人信息';
+          loginForm.style.display = 'none';
+          loginSuccess.style.display = 'flex';
+        } else {
+          modalTitle.textContent = '登录';
+          loginForm.style.display = 'block';
+          loginSuccess.style.display = 'none';
+        }
+      });
+
+      closeLoginBtn.addEventListener('click', () => {
+        loginOverlay.style.display = 'none';
+      });
+
+      submitLoginBtn.addEventListener('click', async () => {
+        const username = loginUsername.value.trim();
+        const password = loginPassword.value.trim();
+
+        if (!username || !password) {
+          loginError.textContent = '用户名和密码不能为空';
+          loginError.style.display = 'block';
+          return;
+        }
+
+        loginError.style.display = 'none';
+        submitLoginBtn.disabled = true;
+        submitLoginBtn.textContent = '登录中...';
+
+        try {
+          const result = await window.feedAPI.login(username, password);
+          
+          if (result.success) {
+            applyLoggedInState({
+              userId: result.userId,
+              username: result.username || username,
+              avatar: result.avatar || '',
+            });
+            
+            modalTitle.textContent = '个人信息';
+            loginForm.style.display = 'none';
+            loginSuccess.style.display = 'flex';
+          } else {
+            loginError.textContent = result.error || '登录失败';
+            loginError.style.display = 'block';
+          }
+        } catch (error) {
+          loginError.textContent = '登录请求失败';
+          loginError.style.display = 'block';
+        } finally {
+          submitLoginBtn.disabled = false;
+          submitLoginBtn.textContent = '登录';
+        }
+      });
+
+      logoutBtn.addEventListener('click', async () => {
+        await window.feedAPI.logout();
+        applyLoggedOutState();
+        
+        modalTitle.textContent = '登录';
+        loginForm.style.display = 'block';
+        loginSuccess.style.display = 'none';
+        loginOverlay.style.display = 'none';
+      });
+
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          loginOverlay.style.display = 'none';
+        }
+        if (e.key === 'Enter' && loginOverlay.style.display === 'flex' && loginForm.style.display !== 'none') {
+          submitLoginBtn.click();
+        }
+      });
+
+      async function restoreLogin() {
+        try {
+          const state = await window.feedAPI.restoreLogin();
+          if (state && state.logged) {
+            applyLoggedInState({
+              userId: state.userId,
+              username: state.username,
+              avatar: state.avatar,
+            });
+          } else {
+            applyLoggedOutState();
+          }
+        } catch (e) {
+          applyLoggedOutState();
+        }
+      }
+
+      // 页面加载完成后初始化
+      init();
+      restoreLogin();
+    </script>
+  </body>
+</html>

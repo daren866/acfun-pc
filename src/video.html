@@ -1,0 +1,349 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>视频播放</title>
+    <link rel="stylesheet" href="video.css" />
+    <style>
+      .action-btn.liked .like-icon, .action-btn.liked .count {
+        color: #fd4c5d !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="video-container">
+      <div class="video-player">
+        <video id="videoPlayer" controls autoplay playsinline></video>
+      </div>
+      
+      <div class="video-info">
+        <div class="tabs">
+          <span class="tab active" data-tab="intro">简介</span>
+          <span class="tab" data-tab="comments">评论</span>
+        </div>
+        
+        <div class="content">
+          <div id="tab-intro" class="tab-content active">
+            <div class="up-info">
+              <img class="avatar" id="upAvatar" src="" alt="UP主头像" />
+              <div class="up-detail">
+                <span class="up-name" id="upName">UP主名称</span>
+                <span class="up-followers" id="fanCount">粉丝: --</span>
+              </div>
+            </div>
+            
+            <h1 class="video-title" id="videoTitle">视频标题</h1>
+            <p class="video-stats" id="videoStats">播放: --</p>
+            
+            <div class="actions">
+              <button class="action-btn" id="likeBtn">
+                <span class="icon like-icon"></span>
+                <span class="count" id="likeCount">--</span>
+              </button>
+              <button class="action-btn">
+                <span class="icon favorite-icon"></span>
+                <span class="count" id="stowCount">--</span>
+              </button>
+              <button class="action-btn">
+                <span class="icon share-icon"></span>
+                <span class="count">分享</span>
+              </button>
+              <button class="action-btn">
+                <span class="icon coin-icon"></span>
+                <span class="count" id="bananaCount">--</span>
+              </button>
+            </div>
+            
+            <div class="description">
+              <p id="description">视频简介...</p>
+            </div>
+          </div>
+          
+          <div id="tab-comments" class="tab-content">
+            <div class="comments-header">
+              <span class="comments-count" id="commentsCount">评论: 0</span>
+            </div>
+            <div class="comments-list" id="commentsList"></div>
+            <div class="loading" id="commentsLoading">加载中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const videoPlayer = document.getElementById('videoPlayer');
+      const likeBtn = document.getElementById('likeBtn');
+      
+      let currentVideoId = '';
+      let commentsPage = 1;
+      let hasMoreComments = true;
+      let isLiked = false;
+      let currentApiSt = '';
+
+      // 调试信息发送函数
+      function sendDebugInfo(info) {
+        window.feedAPI.sendDebugInfo(info);
+      }
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const videoData = urlParams.get('video');
+      
+      if (videoData) {
+        try {
+          const video = JSON.parse(decodeURIComponent(videoData));
+          
+          if (video.title) {
+            document.getElementById('videoTitle').textContent = video.title;
+          }
+          
+          if (video.upName) {
+            document.getElementById('upName').textContent = video.upName;
+          }
+          
+          if (video.videoId) {
+            currentVideoId = video.videoId;
+            loadVideoPlayInfo(video.videoId);
+          }
+        } catch (error) {
+          console.error('解析视频数据失败:', error);
+          sendDebugInfo({
+            type: 'video_data_parse_error',
+            error: error.message,
+            videoData: videoData
+          });
+        }
+      }
+      
+      async function loadVideoPlayInfo(videoId) {
+        try {
+          const result = await window.feedAPI.getVideoPlayInfo(videoId);
+          
+          if (result.success && result.playUrls && result.playUrls.length > 0) {
+            let playUrl = result.playUrls.find(url => url.quality && url.quality.includes('720')) ||
+                        result.playUrls.find(url => url.qualityLabel && url.qualityLabel.includes('720')) ||
+                        result.playUrls[0];
+            
+            if (playUrl && playUrl.url) {
+              videoPlayer.src = playUrl.url;
+            }
+            
+            if (result.title) {
+              document.getElementById('videoTitle').textContent = result.title;
+            }
+            
+            if (result.upName) {
+              document.getElementById('upName').textContent = result.upName;
+            }
+            
+            if (result.upAvatar) {
+              const avatarEl = document.getElementById('upAvatar');
+              avatarEl.src = result.upAvatar;
+            }
+            
+            if (result.fanCount) {
+              document.getElementById('fanCount').textContent = '粉丝: ' + result.fanCount;
+            }
+            
+            if (result.viewCount) {
+              document.getElementById('videoStats').textContent = '播放: ' + result.viewCount;
+            }
+            
+            if (result.likeCount !== undefined) {
+              document.getElementById('likeCount').textContent = result.likeCount;
+            }
+            
+            if (result.stowCount) {
+              document.getElementById('stowCount').textContent = result.stowCount;
+            }
+            
+            if (result.bananaCount) {
+              document.getElementById('bananaCount').textContent = result.bananaCount;
+            }
+            
+            if (result.description) {
+              document.getElementById('description').textContent = result.description;
+            }
+
+            // 保存 api_st
+            if (result.apiSt) {
+              currentApiSt = result.apiSt;
+              sendDebugInfo({
+                type: 'api_st_extracted',
+                apiSt: result.apiSt,
+                videoId: videoId,
+                status: 'success'
+              });
+            } else {
+              sendDebugInfo({
+                type: 'api_st_extracted',
+                error: 'api_st 为空',
+                videoId: videoId,
+                status: 'failed'
+              });
+            }
+
+            checkLikeStatus(videoId);
+          } else {
+            console.error('获取视频播放信息失败:', result.error);
+            sendDebugInfo({
+              type: 'video_play_info_failed',
+              error: result.error,
+              videoId: videoId
+            });
+          }
+        } catch (error) {
+          console.error('加载视频播放信息失败:', error);
+          sendDebugInfo({
+            type: 'video_play_info_error',
+            error: error.message,
+            videoId: videoId
+          });
+        }
+      }
+
+      async function checkLikeStatus(videoId) {
+        try {
+          isLiked = await window.feedAPI.checkVideoLiked(videoId);
+          updateLikeUI();
+          sendDebugInfo({
+            type: 'like_status_checked',
+            isLiked: isLiked,
+            videoId: videoId,
+            status: 'success'
+          });
+        } catch (error) {
+          console.error('检查点赞状态失败:', error);
+          sendDebugInfo({
+            type: 'like_status_check_error',
+            error: error.message,
+            videoId: videoId
+          });
+        }
+      }
+
+      function updateLikeUI() {
+        if (isLiked) {
+          likeBtn.classList.add('liked');
+        } else {
+          likeBtn.classList.remove('liked');
+        }
+      }
+
+      likeBtn.addEventListener('click', async () => {
+        if (!currentVideoId) return;
+        
+        const previousState = isLiked;
+        isLiked = !isLiked;
+        updateLikeUI();
+
+        const likeCountEl = document.getElementById('likeCount');
+        let currentCount = parseInt(likeCountEl.textContent) || 0;
+        likeCountEl.textContent = isLiked ? currentCount + 1 : Math.max(0, currentCount - 1);
+
+        // 检查 api_st 是否存在
+        if (!currentApiSt) {
+          console.error('点赞失败：api_st 为空');
+          sendDebugInfo({
+            type: 'like_operation_failed',
+            error: 'Token 为空，可能未登录或页面解析失败',
+            videoId: currentVideoId,
+            action: isLiked ? 'add' : 'delete',
+            reason: 'api_st 为空'
+          });
+          
+          // 回滚UI
+          isLiked = previousState;
+          updateLikeUI();
+          likeCountEl.textContent = isLiked ? currentCount + 1 : Math.max(0, currentCount - 1);
+          alert('点赞失败: Token 为空，可能未登录或页面解析失败');
+          return;
+        }
+
+        // 请求 API
+        const result = await window.feedAPI.toggleLikeVideo(currentVideoId, isLiked, currentApiSt);
+        
+        if (!result.success) {
+          // 请求失败，回滚UI
+          isLiked = previousState;
+          updateLikeUI();
+          likeCountEl.textContent = isLiked ? currentCount + 1 : Math.max(0, currentCount - 1);
+          alert('操作失败: ' + (result.error || '请检查是否已登录'));
+          sendDebugInfo({
+            type: 'like_operation_failed',
+            error: result.error,
+            videoId: currentVideoId,
+            action: isLiked ? 'add' : 'delete',
+            reason: 'API请求失败'
+          });
+        } else {
+          sendDebugInfo({
+            type: 'like_operation_success',
+            videoId: currentVideoId,
+            action: isLiked ? 'add' : 'delete',
+            result: result.data
+          });
+        }
+      });
+      
+      const tabs = document.querySelectorAll('.tab');
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          const tabName = tab.dataset.tab;
+          tabs.forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+          document.getElementById('tab-' + tabName).classList.add('active');
+          if (tabName === 'comments' && currentVideoId) {
+            loadComments(currentVideoId);
+          }
+        });
+      });
+      
+      async function loadComments(sourceId, page = 1) {
+        const result = await window.feedAPI.getVideoComments(sourceId, page);
+        if (result.success && result.comments) {
+          const commentsList = document.getElementById('commentsList');
+          const commentsCount = document.getElementById('commentsCount');
+          commentsCount.textContent = '评论: ' + result.totalCount;
+          document.getElementById('commentsLoading').style.display = 'none';
+          if (page === 1) {
+            commentsList.innerHTML = '';
+          }
+          result.comments.forEach(comment => {
+            const commentEl = document.createElement('div');
+            commentEl.className = 'comment-item';
+            commentEl.innerHTML = `
+              <img class="comment-avatar" src="${comment.avatar || ''}" alt="${comment.userName}" />
+              <div class="comment-content">
+                <div class="comment-header">
+                  <span class="comment-user">${comment.userName}</span>
+                  <span class="comment-time">${comment.createTime}</span>
+                </div>
+                <p class="comment-text">${comment.content}</p>
+                <div class="comment-actions">
+                  <span class="comment-action">点赞 ${comment.likeCount}</span>
+                  <span class="comment-action">回复</span>
+                </div>
+              </div>`;
+            commentsList.appendChild(commentEl);
+          });
+          hasMoreComments = result.hasMore;
+          commentsPage = page;
+        } else {
+          console.error('获取评论失败:', result.error);
+          sendDebugInfo({
+            type: 'comments_load_failed',
+            error: result.error,
+            sourceId: sourceId,
+            page: page
+          });
+        }
+      }
+
+      // 接收调试信息
+      window.debugAPI.onDebugInfo((info) => {
+        console.log('收到调试信息:', info);
+        // 可以在这里添加UI显示逻辑
+      });
+    </script>
+  </body>
+</html>

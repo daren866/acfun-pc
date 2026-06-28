@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>登录</title>
+    <link rel="stylesheet" href="login.css" />
+  </head>
+  <body>
+    <div class="login-overlay" id="loginOverlay">
+      <div class="login-modal">
+        <div class="modal-header">
+          <h2>登录</h2>
+          <button class="close-btn" id="closeBtn">×</button>
+        </div>
+        
+        <div class="modal-body" id="loginForm">
+          <div class="form-group">
+            <input type="text" id="username" placeholder="用户名或手机" />
+          </div>
+          <div class="form-group">
+            <input type="password" id="password" placeholder="密码" />
+          </div>
+          <button class="login-btn" id="loginBtn">登录</button>
+          <p class="error-message" id="errorMessage"></p>
+        </div>
+        
+        <div class="modal-body" id="loginSuccess" style="display: none;">
+          <div class="avatar-circle"></div>
+          <p class="welcome-message" id="welcomeMessage">用户名，欢迎回来！</p>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      const loginOverlay = document.getElementById('loginOverlay');
+      const closeBtn = document.getElementById('closeBtn');
+      const loginForm = document.getElementById('loginForm');
+      const loginSuccess = document.getElementById('loginSuccess');
+      const loginBtn = document.getElementById('loginBtn');
+      const usernameInput = document.getElementById('username');
+      const passwordInput = document.getElementById('password');
+      const errorMessage = document.getElementById('errorMessage');
+      const welcomeMessage = document.getElementById('welcomeMessage');
+      
+      closeBtn.addEventListener('click', () => {
+        loginOverlay.style.display = 'none';
+      });
+      
+      loginBtn.addEventListener('click', async () => {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+        
+        if (!username || !password) {
+          errorMessage.textContent = '用户名和密码不能为空';
+          errorMessage.style.display = 'block';
+          return;
+        }
+        
+        errorMessage.style.display = 'none';
+        loginBtn.disabled = true;
+        loginBtn.textContent = '登录中...';
+        
+        try {
+          const result = await window.feedAPI.login(username, password);
+          
+          if (result.success) {
+            loginForm.style.display = 'none';
+            loginSuccess.style.display = 'flex';
+            welcomeMessage.textContent = `${username}，欢迎回来！`;
+          } else {
+            errorMessage.textContent = result.error || '登录失败';
+            errorMessage.style.display = 'block';
+          }
+        } catch (error) {
+          errorMessage.textContent = '登录请求失败';
+          errorMessage.style.display = 'block';
+        } finally {
+          loginBtn.disabled = false;
+          loginBtn.textContent = '登录';
+        }
+      });
+      
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          loginOverlay.style.display = 'none';
+        }
+        if (e.key === 'Enter' && loginForm.style.display !== 'none') {
+          loginBtn.click();
+        }
+      });
+      
+      loginOverlay.style.display = 'flex';
+    </script>
+  </body>
+</html>

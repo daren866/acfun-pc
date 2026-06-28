@@ -1,0 +1,270 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: #1a1a1a;
+  color: #fff;
+  overflow: hidden;
+}
+
+.video-container {
+  display: flex;
+  height: 100vh;
+}
+
+.video-player {
+  flex: 1;
+  background-color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#videoPlayer {
+  width: 100%;
+  height: 100%;
+}
+
+.video-info {
+  width: 350px;
+  background-color: #242424;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs {
+  display: flex;
+  padding: 16px;
+  border-bottom: 1px solid #333;
+}
+
+.tab {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #999;
+  position: relative;
+}
+
+.tab.active {
+  color: #fd4c5b;
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 16px;
+  right: 16px;
+  height: 2px;
+  background-color: #fd4c5b;
+}
+
+.content {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.up-info {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: #444;
+  margin-right: 12px;
+  object-fit: cover;
+}
+
+.up-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.up-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.up-followers {
+  font-size: 12px;
+  color: #999;
+}
+
+.video-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.video-stats {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 16px;
+}
+
+.actions {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #333;
+}
+
+.action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+}
+
+.icon {
+  width: 24px;
+  height: 24px;
+  margin-bottom: 4px;
+  background-size: 24px;
+  background-repeat: no-repeat;
+}
+
+.like-icon {
+  background-image: url("like.svg");
+  background-size: 24px;
+}
+
+.action-btn:hover .like-icon {
+  filter: invert(39%) sepia(98%) saturate(677%) hue-rotate(320deg) brightness(95%) contrast(94%);
+}
+
+.favorite-icon {
+  background-image: url("star.svg");
+  background-size: 24px;
+}
+
+.action-btn:hover .favorite-icon {
+  filter: invert(39%) sepia(98%) saturate(677%) hue-rotate(320deg) brightness(95%) contrast(94%);
+}
+
+.share-icon {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='18' cy='5' r='3'/%3E%3Ccircle cx='6' cy='12' r='3'/%3E%3Ccircle cx='18' cy='19' r='3'/%3E%3Cline x1='8.59' y1='13.51' x2='15.42' y2='17.49'/%3E%3Cline x1='15.41' y1='6.51' x2='8.59' y2='10.49'/%3E%3C/svg%3E");
+}
+
+.coin-icon {
+  background-image: url("banana.svg");
+  background-size: 24px;
+}
+
+.action-btn:hover .coin-icon {
+  filter: invert(39%) sepia(98%) saturate(677%) hue-rotate(320deg) brightness(95%) contrast(94%);
+}
+
+.count {
+  font-size: 12px;
+  color: #999;
+}
+
+.action-btn:hover .count {
+  color: #ec4556;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+.comments-header {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #333;
+}
+
+.comments-count {
+  font-size: 14px;
+  color: #999;
+}
+
+.comments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.comment-item {
+  display: flex;
+  gap: 12px;
+}
+
+.comment-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: #444;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.comment-content {
+  flex: 1;
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.comment-user {
+  font-size: 12px;
+  color: #fff;
+  font-weight: 600;
+}
+
+.comment-time {
+  font-size: 10px;
+  color: #666;
+}
+
+.comment-text {
+  font-size: 13px;
+  color: #ccc;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.comment-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.comment-action {
+  font-size: 11px;
+  color: #666;
+  cursor: pointer;
+}
+
+.comment-action:hover {
+  color: #ec4556;
+}
+
+.description {
+  font-size: 14px;
+  color: #ccc;
+  line-height: 1.6;
+}
