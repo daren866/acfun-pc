@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>个人空间</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background-color: #fff;
+        overflow: hidden;
+      }
+      .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+      }
+      .loading-text {
+        color: #666;
+        font-size: 16px;
+      }
+      #spaceFrame {
+        width: 100vw;
+        height: 100vh;
+        border: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="loading-overlay" id="loadingOverlay">
+      <span class="loading-text">加载中...</span>
+    </div>
+    <iframe id="spaceFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    
+    <script>
+      const loadingOverlay = document.getElementById('loadingOverlay');
+      const spaceFrame = document.getElementById('spaceFrame');
+      
+      async function loadSpacePage() {
+        try {
+          const result = await window.feedAPI.getSpacePage();
+          if (result.success && result.html) {
+            const processedHtml = processSpaceHtml(result.html);
+            spaceFrame.srcdoc = processedHtml;
+          } else {
+            loadingOverlay.innerHTML = '<span class="loading-text" style="color: #f87171;">加载失败: ' + (result.error || '未知错误') + '</span>';
+          }
+        } catch (error) {
+          loadingOverlay.innerHTML = '<span class="loading-text" style="color: #f87171;">加载失败: ' + error.message + '</span>';
+        }
+      }
+      
+      function removePageletHeader(html) {
+        return html.replace(/<div id="pagelet_header"[^>]*>[\s\S]*?<\/div>/gi, '');
+      }
+      
+      function processSpaceHtml(html) {
+        html = removePageletHeader(html);
+        return html;
+      }
+      
+      spaceFrame.addEventListener('load', function() {
+        loadingOverlay.style.display = 'none';
+      });
+      
+      spaceFrame.addEventListener('error', function() {
+        loadingOverlay.innerHTML = '<span class="loading-text" style="color: #f87171;">加载失败: iframe加载错误</span>';
+      });
+      
+      loadSpacePage();
+    </script>
+  </body>
+</html>

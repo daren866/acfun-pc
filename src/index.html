@@ -41,16 +41,22 @@
   <body>
     <header>
       <div class="logo"><img src="acfunguilogo.svg" alt="AcFun" /></div>
-      <div class="search"><input type="text" placeholder="搜索" /><button class="search-btn"></button></div>
+      <div class="search">
+        <input type="text" id="searchInput" placeholder="搜索" />
+        <button class="search-btn" id="searchBtn"></button>
+      </div>
     </header>
     <div class="layout">
       <aside class="sidebar">
-        <nav class="sidebar-nav"><a href="#" class="nav-item active" title="首页"><span class="nav-icon home-icon"></span></a></nav>
+        <nav class="sidebar-nav">
+          <a href="#" class="nav-item active" id="navHome" title="首页"><span class="nav-icon home-icon"></span></a>
+        </nav>
         <div class="sidebar-bottom"><div class="login-btn" id="loginBtn" title="登录"></div></div>
       </aside>
       <main>
         <div class="video-grid" id="videoGrid"></div>
         <div class="loading" id="loading">加载中...</div>
+        <div class="search-result" id="searchResult" style="display: none;"></div>
       </main>
     </div>
     <div class="login-overlay" id="loginOverlay" style="display: none;">
@@ -250,13 +256,11 @@
         loginError.style.display = 'none';
       }
 
-      loginBtn.addEventListener('click', () => {
-        loginOverlay.style.display = 'flex';
+      loginBtn.addEventListener('click', async () => {
         if (currentUser) {
-          modalTitle.textContent = '个人信息';
-          loginForm.style.display = 'none';
-          loginSuccess.style.display = 'flex';
+          await window.feedAPI.openSpace();
         } else {
+          loginOverlay.style.display = 'flex';
           modalTitle.textContent = '登录';
           loginForm.style.display = 'block';
           loginSuccess.style.display = 'none';
@@ -291,9 +295,7 @@
               avatar: result.avatar || '',
             });
             
-            modalTitle.textContent = '个人信息';
-            loginForm.style.display = 'none';
-            loginSuccess.style.display = 'flex';
+            loginOverlay.style.display = 'none';
           } else {
             loginError.textContent = result.error || '登录失败';
             loginError.style.display = 'block';
@@ -346,6 +348,60 @@
       // 页面加载完成后初始化
       init();
       restoreLogin();
+
+      // 搜索功能
+      const searchInput = document.getElementById('searchInput');
+      const searchBtn = document.getElementById('searchBtn');
+      const searchResult = document.getElementById('searchResult');
+      const navHome = document.getElementById('navHome');
+      let isSearchMode = false;
+
+      async function performSearch() {
+        const keyword = searchInput.value.trim();
+        if (!keyword) return;
+
+        isSearchMode = true;
+        videoGrid.style.display = 'none';
+        searchResult.style.display = 'block';
+        searchResult.innerHTML = '<div class="loading">搜索中...</div>';
+
+        try {
+          const videos = await window.feedAPI.search(keyword);
+          if (videos && videos.length > 0) {
+            renderSearchResults(videos);
+          } else {
+            searchResult.innerHTML = '<div class="loading">没有找到相关视频</div>';
+          }
+        } catch (error) {
+          searchResult.innerHTML = '<div class="loading">搜索失败，请稍后重试</div>';
+        }
+      }
+
+      function renderSearchResults(videos) {
+        searchResult.innerHTML = '';
+        videos.forEach((video) => {
+          searchResult.appendChild(createVideoCard(video));
+        });
+      }
+
+      searchBtn.addEventListener('click', performSearch);
+
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          performSearch();
+        }
+      });
+
+      navHome.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (isSearchMode) {
+          isSearchMode = false;
+          videoGrid.style.display = 'grid';
+          searchResult.style.display = 'none';
+          searchResult.innerHTML = '';
+          searchInput.value = '';
+        }
+      });
     </script>
   </body>
 </html>

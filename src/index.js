@@ -16,6 +16,12 @@ Menu.setApplicationMenu(null);
 let loginCookies = {};
 // 缓存当前登录用户ID
 let currentUserId = '';
+// 缓存登录token
+let cachedTokens = {
+  ssecurity: '',
+  api_st: '',
+  api_at: ''
+};
 
 // Cookie 持久化过期时间：1年后（秒级时间戳）
 const PERSIST_EXPIRES = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
@@ -111,6 +117,24 @@ const apiConfigs = [
   { pcursor: '1782546700559', blockId: '167', recPosition: '0' }
 ];
 
+// 统一日志函数
+function logApiRequest(apiName, url, method = 'GET', body = null) {
+  const timestamp = new Date().toLocaleString('zh-CN', { hour12: false });
+  console.log(`[${timestamp}] [${apiName}] ${method} ${url}`);
+  if (body) {
+    console.log(`[${timestamp}] [${apiName}] Body:`, body);
+  }
+}
+
+function logApiResponse(apiName, statusCode, data = null) {
+  const timestamp = new Date().toLocaleString('zh-CN', { hour12: false });
+  console.log(`[${timestamp}] [${apiName}] Response: ${statusCode}`);
+  if (data) {
+    const dataStr = typeof data === 'object' ? JSON.stringify(data).substring(0, 500) : String(data);
+    console.log(`[${timestamp}] [${apiName}] Data:`, dataStr);
+  }
+}
+
 function getRandomIndex() {
   return Math.floor(Math.random() * 5) + 1;
 }
@@ -154,6 +178,8 @@ function parseHtmlVideos(html) {
 function fetchFeed(randomIndex = null) {
   const index = randomIndex || getRandomIndex();
   const url = getApiUrl(index);
+  
+  logApiRequest('feed', url);
 
   const options = {
     headers: { ...COMMON_HEADERS }
@@ -164,6 +190,7 @@ function fetchFeed(randomIndex = null) {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
+        logApiResponse('feed', res.statusCode);
         try {
           const jsonData = JSON.parse(data);
           if (jsonData && jsonData.tpl) {
@@ -172,10 +199,12 @@ function fetchFeed(randomIndex = null) {
             resolve([]);
           }
         } catch (error) {
+          console.error('[feed] 解析失败:', error.message);
           reject(error);
         }
       });
     }).on('error', (error) => {
+      console.error('[feed] 请求失败:', error.message);
       reject(error);
     });
   });
@@ -197,13 +226,266 @@ ipcMain.handle('feed-loadMore', async () => {
   }
 });
 
-function fetchVideoPlayInfo(videoId) {
+// 搜索功能
+ipcMain.handle('search', async (event, keyword) => {
+  try {
+    const result = await searchVideos(keyword);
+    return result;
+  } catch (error) {
+    console.error('搜索失败:', error);
+    return [];
+  }
+});
+
+async function searchVideos(keyword) {
+  const encodedKeyword = encodeURIComponent(keyword);
+  const url = `https://www.acfun.cn/search?type=video&keyword=${encodedKeyword}`;
+
+  console.log(`\n🔍 搜索请求 - URL: ${url}`);
+
+  const cookieStr = await getCookieString('https://www.acfun.cn/');
+  console.log(`🍪 搜索请求 Cookie 长度: ${cookieStr.length}`);
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+    'Cache-Control': 'no-cache',
+    'pragma': 'no-cache',
+    'Cookie': cookieStr,
+    'Referer': 'https://www.acfun.cn/',
+  };
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      method: 'GET',
+      hostname: 'www.acfun.cn',
+      path: `/search?type=video&keyword=${encodedKeyword}`,
+      headers: headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const data = Buffer.concat(chunks).toString('utf8');
+        console.log(`📋 搜索响应: ${res.statusCode}`);
+        console.log(`📋 搜索响应长度: ${data.length}`);
+        logApiResponse('search', res.statusCode, data);
+
+        try {
+          // 解析 bigPipe.onPageletArrive 中的视频数据
+          let videos = [];
+          
+          // 匹配 bigPipe.onPageletArrive({"container":"","id":"pagelet_video","html":"...",...})
+          const bigPipeRegex = /bigPipe\.onPageletArrive\(({[\s\S]*?})\);/g;
+          let match;
+          let videoHtml = '';
+          let pageletCount = 0;
+          
+          while ((match = bigPipeRegex.exec(data)) !== null) {
+            try {
+              const jsonStr = match[1];
+              const pageletData = JSON.parse(jsonStr);
+              pageletCount++;
+              console.log(`📋 找到 pagelet[${pageletCount}]: ${pageletData.id}`);
+              
+              if (pageletData.id === 'pagelet_video' && pageletData.html) {
+                videoHtml = pageletData.html;
+                console.log('📋 找到 pagelet_video HTML');
+                break;
+              }
+              
+              // 也从综合搜索中提取视频
+              if (pageletData.id === 'pagelet_complex' && pageletData.html) {
+                const complexVideos = parseSearchResults(pageletData.html);
+                if (complexVideos.length > 0) {
+                  console.log(`📋 从 pagelet_complex 找到 ${complexVideos.length} 个视频`);
+                  videos = complexVideos;
+                }
+              }
+            } catch (e) {
+              // 解析失败跳过
+            }
+          }
+          
+          console.log(`📋 共找到 ${pageletCount} 个 pagelet`);
+          
+          if (videoHtml) {
+            videos = parseSearchResults(videoHtml);
+          }
+          
+          // 如果没找到，尝试直接从整个响应中提取
+          if (videos.length === 0) {
+            console.log('📋 尝试直接从响应中提取视频信息');
+            videos = parseSearchResultsDirect(data);
+          }
+          
+          console.log(`📋 最终解析到 ${videos.length} 个视频`);
+          resolve(videos);
+        } catch (e) {
+          console.error('解析搜索结果失败:', e);
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.error('搜索请求失败:', e.message);
+      resolve([]);
+    });
+    req.end();
+  });
+}
+
+function parseSearchResults(html) {
+  const videos = [];
+
+  // 解析视频项 - 从搜索结果页面中提取
+  const videoCards = html.match(/<a[^>]*href="\/v\/ac(\d+)"[^>]*>[\s\S]*?<\/a>/g) || [];
+  
+  console.log(`📊 找到 ${videoCards.length} 个视频卡片`);
+  
+  for (const card of videoCards) {
+    // 提取视频ID
+    const idMatch = card.match(/href="\/v\/ac(\d+)"/);
+    if (!idMatch) continue;
+    const videoId = idMatch[1];
+    
+    // 提取封面
+    const coverMatch = card.match(/<img[^>]*src="([^"]+)"[^>]*>/);
+    const coverUrl = coverMatch ? coverMatch[1] : '';
+    
+    // 提取标题
+    const titleMatch = card.match(/class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/(span|div|a)>/i) ||
+                      card.match(/alt="([^"]+)"/i);
+    const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : '未知标题';
+    
+    // 提取作者
+    const authorMatch = card.match(/class="[^"]*author[^"]*"[^>]*>([\s\S]*?)<\/(span|div|a)>/i) ||
+                        card.match(/class="[^"]*up[^"]*"[^>]*>([\s\S]*?)<\/(span|div|a)>/i);
+    const upName = authorMatch ? authorMatch[1].replace(/<[^>]+>/g, '').trim() : '未知UP主';
+    
+    videos.push({ videoId, title, coverUrl, upName });
+  }
+  
+  // 如果上面的方式没找到，尝试更简单的方法
+  if (videos.length === 0) {
+    const videoIds = [];
+    const idMatches = html.match(/href="\/v\/ac(\d+)"/g) || [];
+    for (const m of idMatches) {
+      const id = m.match(/ac(\d+)/)[1];
+      if (!videoIds.includes(id)) videoIds.push(id);
+    }
+    
+    const imgSrcs = [];
+    const imgMatches = html.match(/src="(https?:\/\/[^"]*acfun[^"]*(?:cover|thumbnail)[^"]*)"/gi) || [];
+    for (const m of imgMatches) {
+      const src = m.match(/src="([^"]+)"/i)[1];
+      if (!imgSrcs.includes(src)) imgSrcs.push(src);
+    }
+    
+    console.log(`📊 回退方式 - ids: ${videoIds.length}, imgs: ${imgSrcs.length}`);
+    
+    for (let i = 0; i < Math.min(videoIds.length, 20); i++) {
+      videos.push({
+        videoId: videoIds[i],
+        title: '视频 ' + (i + 1),
+        coverUrl: imgSrcs[i] || '',
+        upName: ''
+      });
+    }
+  }
+
+  console.log(`📊 解析到 ${videos.length} 个视频`);
+  return videos;
+}
+
+function parseSearchResultsDirect(data) {
+  const videos = [];
+
+  // 直接在响应中查找视频链接
+  const videoIdSet = new Set();
+  const videoIdMatches = data.match(/href="\/v\/ac(\d+)"/g);
+  if (videoIdMatches) {
+    for (const match of videoIdMatches) {
+      const videoId = match.match(/ac(\d+)/)[1];
+      videoIdSet.add(videoId);
+    }
+  }
+
+  // 查找 HTML 中的图片
+  const imgSrcSet = new Set();
+  const imgMatches = data.match(/src="(https?:\/\/[^"]*acfun[^"]*(?:cover|thumbnail)[^"]*)"/g);
+  if (imgMatches) {
+    for (const match of imgMatches) {
+      const src = match.match(/src="([^"]+)"/)[1];
+      imgSrcSet.add(src);
+    }
+  }
+
+  // 如果没找到cover/thumbnail，尝试找任何 acfun.cn 的图片
+  if (imgSrcSet.size === 0) {
+    const anyImgMatches = data.match(/src="(https?:\/\/[^"]*acfun\.cn[^"]*)"/g);
+    if (anyImgMatches) {
+      for (const match of anyImgMatches) {
+        const src = match.match(/src="([^"]+)"/)[1];
+        if (!src.includes('avatar') && !src.includes('header') && !src.includes('logo')) {
+          imgSrcSet.add(src);
+        }
+      }
+    }
+  }
+
+  // 查找标题
+  const titleSet = new Set();
+  const titleMatches = data.match(/class="title"[^>]*>([^<]+)<\/span>/g);
+  if (titleMatches) {
+    for (const match of titleMatches) {
+      const title = match.replace(/class="title"[^>]*>/, '').replace(/<\/?span[^>]*>/g, '').trim();
+      if (title) titleSet.add(title);
+    }
+  }
+
+  // 查找作者
+  const authorSet = new Set();
+  const authorMatches = data.match(/class="author"[^>]*>([^<]+)<\/span>/g);
+  if (authorMatches) {
+    for (const match of authorMatches) {
+      const author = match.replace(/class="author"[^>]*>/, '').replace(/<\/?span[^>]*>/g, '').trim();
+      if (author) authorSet.add(author);
+    }
+  }
+
+  console.log(`📊 直接解析 - videoIds: ${videoIdSet.size}, images: ${imgSrcSet.size}, titles: ${titleSet.size}, authors: ${authorSet.size}`);
+
+  const videoIds = Array.from(videoIdSet);
+  const images = Array.from(imgSrcSet);
+  const titles = Array.from(titleSet);
+  const authors = Array.from(authorSet);
+
+  for (let i = 0; i < Math.min(videoIds.length, 20); i++) {
+    videos.push({
+      videoId: videoIds[i],
+      title: titles[i] || '未知标题',
+      coverUrl: images[i] || '',
+      upName: authors[i] || '未知UP主'
+    });
+  }
+
+  return videos;
+}
+
+async function fetchVideoPlayInfo(videoId) {
   const url = `https://www.acfun.cn/v/ac${videoId}`;
+  
+  logApiRequest('video-play-info', url);
+  
+  // ★ 关键修改：带上登录后的 Cookie 去请求视频页面
+  const cookieStr = await getCookieString('https://www.acfun.cn/');
 
   const options = {
     headers: {
       ...COMMON_HEADERS,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Cookie': cookieStr
     }
   };
 
@@ -211,21 +493,20 @@ function fetchVideoPlayInfo(videoId) {
     https.get(url, options, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
+      res.on('end', async () => {
+        logApiResponse('video-play-info', res.statusCode);
         try {
           console.log('\n📄 视频页面原始内容片段:', data.substring(0, 500) + '...');
 
           // 优化 api_st 提取：尝试多种可能的格式
           let apiSt = '';
           let matchSource = '';
-          let allMatches = [];
 
           // 尝试从 window.api_st 提取
           const apiStMatch1 = data.match(/window\.api_st\s*=\s*"([^"]+)"/);
           if (apiStMatch1) {
             apiSt = apiStMatch1[1];
             matchSource = 'window.api_st';
-            allMatches.push({ source: 'window.api_st', value: apiSt });
           }
 
           // 尝试从 "api_st" 字段提取
@@ -234,7 +515,6 @@ function fetchVideoPlayInfo(videoId) {
             if (apiStMatch2) {
               apiSt = apiStMatch2[1];
               matchSource = '"api_st" 字段';
-              allMatches.push({ source: '"api_st" 字段', value: apiSt });
             }
           }
 
@@ -244,7 +524,6 @@ function fetchVideoPlayInfo(videoId) {
             if (apiStMatch3) {
               apiSt = apiStMatch3[1];
               matchSource = 'acfun.midground.api_st';
-              allMatches.push({ source: 'acfun.midground.api_st', value: apiSt });
             }
           }
 
@@ -255,10 +534,7 @@ function fetchVideoPlayInfo(videoId) {
               try {
                 const pageInfo = JSON.parse(pageInfoMatch[1]);
                 apiSt = pageInfo.api_st || pageInfo['acfun.midground.api_st'] || '';
-                if (apiSt) {
-                  matchSource = 'pageInfo 对象';
-                  allMatches.push({ source: 'pageInfo 对象', value: apiSt });
-                }
+                if (apiSt) matchSource = 'pageInfo 对象';
               } catch (e) {
                 console.warn('解析 pageInfo 失败:', e.message);
               }
@@ -270,18 +546,34 @@ function fetchVideoPlayInfo(videoId) {
             const cookieMatch = data.match(/setCookie\("acfun\.midground\.api_st",\s*"([^"]+)"\)/);
             if (cookieMatch) {
               apiSt = cookieMatch[1];
-              matchSource = 'setCookie 调用';
-              allMatches.push({ source: 'setCookie 调用', value: apiSt });
+              matchSource = 'HTML中的setCookie调用';
+            }
+          }
+          
+          // ★ 新增：直接从当前 session 的 cookie 中获取
+          if (!apiSt) {
+            const cookies = await session.defaultSession.cookies.get({ url: 'https://www.acfun.cn/' });
+            const apiStCookie = cookies.find(c => c.name === 'acfun.midground.api_st');
+            if (apiStCookie) {
+              apiSt = apiStCookie.value;
+              matchSource = 'Session Cookie';
             }
           }
 
           console.log(`🔑 提取到的 api_st: ${apiSt || '未找到'}`);
           console.log(`📝 匹配来源: ${matchSource || '无匹配'}`);
-          console.log('🔍 所有匹配尝试:', JSON.stringify(allMatches, null, 2));
 
           const videoInfoMatch = data.match(/window\.videoInfo\s*=\s*({[\s\S]*?});/);
           if (videoInfoMatch) {
             const videoData = JSON.parse(videoInfoMatch[1]);
+            console.log('\n📋 videoInfo 结构:', JSON.stringify(Object.keys(videoData), null, 2));
+            console.log('📋 videoData.resourceId:', videoData.resourceId);
+            console.log('📋 videoData.id:', videoData.id);
+            console.log('📋 videoData.currentVideoInfo:', videoData.currentVideoInfo ? JSON.stringify(Object.keys(videoData.currentVideoInfo), null, 2) : 'null');
+            if (videoData.currentVideoInfo) {
+              console.log('📋 videoData.currentVideoInfo.resourceId:', videoData.currentVideoInfo.resourceId);
+              console.log('📋 videoData.currentVideoInfo.id:', videoData.currentVideoInfo.id);
+            }
             if (videoData.currentVideoInfo && videoData.currentVideoInfo.ksPlayJson) {
               const ksPlayJson = JSON.parse(videoData.currentVideoInfo.ksPlayJson);
               const playUrls = [];
@@ -315,7 +607,8 @@ function fetchVideoPlayInfo(videoId) {
                 viewCount: videoData.viewCount || 0,
                 description: videoData.description || '',
                 playUrls: playUrls,
-                apiSt: apiSt
+                apiSt: apiSt,
+                resourceId: videoData.resourceId || videoData.id || (videoData.currentVideoInfo ? videoData.currentVideoInfo.resourceId || videoData.currentVideoInfo.id : '')
               });
             } else {
               resolve({ success: false, error: '未找到播放信息' });
@@ -343,6 +636,9 @@ ipcMain.handle('get-video-play-info', async (event, videoId) => {
 
 function fetchComments(sourceId, page = 1) {
   const url = `https://www.acfun.cn/rest/pc-direct/comment/list?sourceId=${sourceId}&sourceType=3&page=${page}&pivotCommentId=0&newPivotCommentId=&t=${Date.now()}&supportZtEmot=true`;
+  
+  logApiRequest('comments', url);
+  
   const options = { headers: { ...COMMON_HEADERS } };
 
   return new Promise((resolve, reject) => {
@@ -350,6 +646,7 @@ function fetchComments(sourceId, page = 1) {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
+        logApiResponse('comments', res.statusCode);
         try {
           const jsonData = JSON.parse(data);
           if (jsonData.rootComments) {
@@ -402,6 +699,8 @@ function login(username, password) {
     captcha: '',
   });
 
+  logApiRequest('login', url, 'POST', postData);
+
   const options = {
     method: 'POST',
     hostname,
@@ -435,6 +734,7 @@ function login(username, password) {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
+        logApiResponse('login', res.statusCode, data);
         try {
           const result = JSON.parse(data);
           if (result.result === 0) {
@@ -450,12 +750,16 @@ function login(username, password) {
             resolve({ success: false, error: result.error_msg || result.msg || '登录失败' });
           }
         } catch (error) {
+          console.error('[login] 解析失败:', error.message);
           resolve({ success: false, error: '登录响应解析失败' });
         }
       });
     });
 
-    req.on('error', (error) => reject(error));
+    req.on('error', (error) => {
+      console.error('[login] 请求失败:', error.message);
+      reject(error);
+    });
     req.write(postData);
     req.end();
   });
@@ -472,12 +776,108 @@ ipcMain.handle('login', async (event, username, password) => {
         result.username = info.username;
         result.avatar = info.avatar;
       }
+      // 获取额外token
+      const tokens = await fetchTokens();
+      if (tokens.success) {
+        cachedTokens.ssecurity = tokens.ssecurity;
+        cachedTokens.api_st = tokens.api_st;
+        cachedTokens.api_at = tokens.api_at;
+        result.ssecurity = tokens.ssecurity;
+        result.api_st = tokens.api_st;
+        result.api_at = tokens.api_at;
+        console.log('✅ Token已缓存:', cachedTokens);
+      }
     }
     return result;
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
+
+// ==================== 获取额外token ====================
+
+async function fetchTokens() {
+  const url = 'https://id.app.acfun.cn/rest/web/token/get';
+  const { hostname, pathname, search } = new URL(url);
+
+  const postData = 'sid=acfun.midground.api';
+  
+  logApiRequest('tokens', url, 'POST', postData);
+
+  let cookieStr = await getCookieString('https://www.acfun.cn/');
+  console.log('🍪 fetchTokens - cookieStr from www.acfun.cn:', cookieStr);
+  console.log('🍪 fetchTokens - 完整cookie长度:', cookieStr ? cookieStr.length : 0);
+
+  // 如果 www.acfun.cn 的cookie为空，尝试从 id.app.acfun.cn 获取
+  if (!cookieStr || cookieStr.length === 0) {
+    cookieStr = await getCookieString('https://id.app.acfun.cn/');
+    console.log('🍪 fetchTokens - fallback: cookieStr from id.app.acfun.cn:', cookieStr);
+  }
+
+  // 如果都为空，尝试直接使用 loginCookies 对象
+  if (!cookieStr || cookieStr.length === 0) {
+    cookieStr = Object.entries(loginCookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    console.log('🍪 fetchTokens - fallback: 使用 loginCookies 对象:', cookieStr);
+  }
+
+  const options = {
+    method: 'POST',
+    hostname,
+    path: pathname + search,
+    headers: {
+      'accept': '*/*',
+      'accept-language': 'zh-CN,zh;q=0.9',
+      'cache-control': 'no-cache',
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'pragma': 'no-cache',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-site',
+      'Referer': 'https://www.acfun.cn/',
+      'Origin': 'https://www.acfun.cn',
+      'User-Agent': COMMON_HEADERS['User-Agent'],
+      'Cookie': cookieStr,
+    },
+  };
+
+  return new Promise((resolve) => {
+    const req = https.request(options, (res) => {
+      console.log('Token响应状态码:', res.statusCode);
+      console.log('Token响应头:', JSON.stringify(res.headers, null, 2));
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        logApiResponse('tokens', res.statusCode, data);
+        console.log('Token响应body:', data);
+        try {
+          const result = JSON.parse(data);
+          if (result.result === 0) {
+            const token = {
+              success: true,
+              ssecurity: result.ssecurity,
+              api_st: result['acfun.midground.api_st'],
+              api_at: result['acfun.midground.api.at']
+            };
+            console.log('✅ Token提取结果:', token);
+            resolve(token);
+          } else {
+            console.log('❌ Token获取失败 result:', result.result, 'msg:', result.msg);
+            resolve({ success: false, error: '获取token失败', raw: result });
+          }
+        } catch (e) {
+          console.log('❌ Token响应解析失败:', e.message);
+          resolve({ success: false, error: '解析token响应失败', raw: data });
+        }
+      });
+    });
+    req.on('error', (error) => {
+      console.log('❌ Token请求网络错误:', error.message);
+      resolve({ success: false, error: error.message });
+    });
+    req.write(postData);
+    req.end();
+  });
+}
 
 // ==================== 获取个人资料 ====================
 
@@ -538,6 +938,16 @@ async function restoreLoginState() {
   const info = await fetchPersonalBasicInfo();
   if (info.success) {
     currentUserId = String(info.userId);
+    
+    // 重新获取token
+    const tokens = await fetchTokens();
+    if (tokens.success) {
+      cachedTokens.ssecurity = tokens.ssecurity;
+      cachedTokens.api_st = tokens.api_st;
+      cachedTokens.api_at = tokens.api_at;
+      console.log('✅ 登录状态恢复，Token已重新缓存:', cachedTokens);
+    }
+    
     return {
       logged: true,
       userId: info.userId,
@@ -586,16 +996,6 @@ async function interactVideo(videoId, action, apiSt) {
   const url = `https://kuaishouzt.com/rest/zt/interact/${endpoint}`;
   const { hostname, pathname } = new URL(url);
 
-  if (!apiSt) {
-    console.error('❌ 点赞失败：api_st 为空，请检查登录状态或页面解析');
-    return { success: false, error: 'Token 为空，可能未登录或页面解析失败' };
-  }
-
-  if (!currentUserId) {
-    console.error('❌ 点赞失败：用户ID为空，请检查登录状态');
-    return { success: false, error: '用户ID为空，请重新登录' };
-  }
-
   // 构建请求体
   const body = querystring.stringify({
     kpn: 'ACFUN_APP',
@@ -604,41 +1004,33 @@ async function interactVideo(videoId, action, apiSt) {
     interactType: '1',
     objectType: '2',
     objectId: String(videoId),
-    'acfun.midground.api_st': apiSt,
+    'acfun.midground.api_st': apiSt || cachedTokens.api_st,
     userId: currentUserId,
   }) + '&extParams%5BisPlaying%5D=false&extParams%5BshowCount%5D=1&extParams%5BotherBtnClickedCount%5D=10&extParams%5BplayBtnClickedCount%5D=0';
+
+  logApiRequest('like', url, 'POST', body);
 
   console.log('\n🔍 点赞请求详情：');
   console.log('📌 接口:', url);
   console.log('🔑 Action:', action);
   console.log('🎯 Video ID:', videoId);
   console.log('📝 请求体:', body);
-  console.log('🔑 api_st:', apiSt);
+  console.log('🔑 api_st:', apiSt || cachedTokens.api_st);
   console.log('👤 User ID:', currentUserId);
 
-  // 获取 Cookie
-  const cookieStr = await getCookieString('https://www.acfun.cn/');
-  console.log('🍪 Cookie:', cookieStr);
-
-  // 构建请求头
+  // 构建请求头（按照浏览器fetch格式，不包含Cookie和Origin）
   const headers = {
     'accept': '*/*',
     'accept-language': 'zh-CN,zh;q=0.9',
     'cache-control': 'no-cache',
     'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'content-length': Buffer.byteLength(body),
     'pragma': 'no-cache',
-    'sec-ch-ua': '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
     'sec-fetch-site': 'cross-site',
     'sec-fetch-storage-access': 'active',
     'Referer': 'https://www.acfun.cn/',
-    'Origin': 'https://www.acfun.cn',
     'User-Agent': COMMON_HEADERS['User-Agent'],
-    'Cookie': cookieStr,
   };
   console.log('📋 请求头:', JSON.stringify(headers, null, 2));
 
@@ -652,19 +1044,20 @@ async function interactVideo(videoId, action, apiSt) {
       let data = '';
       res.on('data', (c) => (data += c));
       res.on('end', () => {
+        logApiResponse('like', res.statusCode, data);
         console.log('📤 点赞响应:', data);
         try {
           const json = JSON.parse(data);
-          if (json.result === 0) { 
+          if (json.result === 1) { 
             console.log('✅ 点赞成功');
             resolve({ success: true, data: json });
           } else {
-            console.error('❌ 点赞失败:', json.error_msg || '操作失败');
-            resolve({ success: false, error: json.error_msg || '操作失败' });
+            console.log('⚠️ 点赞响应非成功:', json.error_msg || json.result);
+            resolve({ success: false, error: json.error_msg || '操作失败', data: json });
           }
         } catch (e) {
-          console.error('❌ 响应解析失败:', e.message);
-          resolve({ success: false, error: '解析失败' });
+          console.log('⚠️ 响应解析失败（非JSON）:', data);
+          resolve({ success: false, error: '解析失败', data: data });
         }
       });
     });
@@ -678,8 +1071,30 @@ async function interactVideo(videoId, action, apiSt) {
 }
 
 // IPC 处理器
-ipcMain.handle('toggle-like-video', async (event, videoId, isLike, apiSt) => {
+ipcMain.handle('toggle-like-video', async (event, videoId, isLike) => {
   const action = isLike ? 'add' : 'delete';
+  
+  // 如果token为空，尝试重新获取
+  if (!cachedTokens.api_st) {
+    console.log('🔄 Token为空，尝试重新获取...');
+    const tokens = await fetchTokens();
+    if (tokens.success) {
+      cachedTokens.ssecurity = tokens.ssecurity;
+      cachedTokens.api_st = tokens.api_st;
+      cachedTokens.api_at = tokens.api_at;
+      console.log('✅ Token重新获取成功');
+    }
+  }
+  
+  // 使用缓存的token
+  const apiSt = cachedTokens.api_st;
+  
+  console.log('🔍 点赞token检查:');
+  console.log('  - cachedTokens:', JSON.stringify(cachedTokens));
+  console.log('  - apiSt from cache:', apiSt);
+  console.log('  - videoId:', videoId);
+  console.log('  - action:', action);
+  
   const result = await interactVideo(videoId, action, apiSt);
   
   if (result.success) {
@@ -700,17 +1115,282 @@ ipcMain.handle('check-video-liked', async (event, videoId) => {
   return readLikedVideos().includes(videoId);
 });
 
+// ==================== 香蕉打赏 ====================
+
+async function sendBanana(videoId, count) {
+  const url = 'https://www.acfun.cn/rest/pc-direct/banana/throwBanana';
+  const { hostname, pathname, search } = new URL(url);
+
+  const cookieStr = await getCookieString('https://www.acfun.cn/');
+
+  const body = querystring.stringify({
+    resourceId: String(videoId),
+    count: String(count),
+    resourceType: '2',
+  });
+
+  logApiRequest('banana', url, 'POST', body);
+
+  console.log('\n🍌 香蕉打赏请求详情：');
+  console.log('📌 接口:', url);
+  console.log('🎯 Video ID:', videoId);
+  console.log('🍌 Count:', count);
+  console.log('� 请求体:', body);
+  console.log('👤 User ID:', currentUserId);
+
+  const headers = {
+    'accept': 'application/json, text/javascript, */*; q=0.01',
+    'accept-language': 'zh-CN,zh;q=0.9',
+    'cache-control': 'no-cache',
+    'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'pragma': 'no-cache',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'x-requested-with': 'XMLHttpRequest',
+    'Referer': `https://www.acfun.cn/v/ac${videoId}`,
+    'User-Agent': COMMON_HEADERS['User-Agent'],
+    'Cookie': cookieStr,
+  };
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      method: 'POST',
+      hostname,
+      path: pathname + search,
+      headers: headers,
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        logApiResponse('banana', res.statusCode, data);
+        console.log('📤 香蕉打赏响应:', data);
+        try {
+          const json = JSON.parse(data);
+          if (json.result === 0) { 
+            console.log('✅ 香蕉打赏成功');
+            resolve({ success: true, data: json });
+          } else {
+            console.log('⚠️ 香蕉打赏响应非成功:', json.error_msg || json.result);
+            resolve({ success: false, error: json.error_msg || '操作失败', data: json });
+          }
+        } catch (e) {
+          console.log('⚠️ 响应解析失败:', data);
+          resolve({ success: false, error: '解析失败', data: data });
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.error('❌ 网络错误:', e.message);
+      resolve({ success: false, error: e.message });
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+ipcMain.handle('send-banana', async (event, videoId, count) => {
+  const result = await sendBanana(videoId, count);
+  return result;
+});
+
+// ==================== 弹幕功能 ====================
+
+async function getDanmaku(videoId) {
+  const url = 'https://www.acfun.cn/rest/pc-direct/new-danmaku/list';
+  const { hostname, pathname } = new URL(url);
+
+  const cookieStr = await getCookieString('https://www.acfun.cn/');
+
+  const body = querystring.stringify({
+    resourceId: String(videoId),
+    resourceType: 9,
+    enableAdvanced: true,
+    pcursor: '1',
+    count: 200,
+    sortType: 1,
+    asc: false,
+  });
+
+  console.log(`\n🎯 弹幕请求 - 使用的resourceId: ${videoId}`);
+  logApiRequest('danmaku', url, 'POST', body);
+
+  const headers = {
+    'accept': 'application/json, text/plain, */*',
+    'accept-language': 'zh-CN,zh;q=0.9',
+    'cache-control': 'no-cache',
+    'content-type': 'application/x-www-form-urlencoded',
+    'pragma': 'no-cache',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'Referer': `https://www.acfun.cn/v/ac${videoId}`,
+    'User-Agent': COMMON_HEADERS['User-Agent'],
+    'Cookie': cookieStr,
+  };
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      method: 'POST',
+      hostname,
+      path: pathname,
+      headers: headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const data = Buffer.concat(chunks).toString('utf8');
+        logApiResponse('danmaku', res.statusCode, data);
+        try {
+          const json = JSON.parse(data);
+          if (json.result === 0) {
+            resolve({ success: true, danmakus: json.danmakus || [], totalCount: json.totalCount || 0 });
+          } else {
+            resolve({ success: false, error: json.error_msg || '获取弹幕失败', data: json });
+          }
+        } catch (e) {
+          resolve({ success: false, error: '解析失败', data: data });
+        }
+      });
+    });
+    req.on('error', (e) => {
+      resolve({ success: false, error: e.message });
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+ipcMain.handle('get-danmaku', async (event, videoId) => {
+  const result = await getDanmaku(videoId);
+  return result;
+});
+
+// ==================== 个人空间功能 ====================
+
+async function getSpacePage() {
+  const url = 'https://www.acfun.cn/u/67120110';
+  const { hostname, pathname } = new URL(url);
+
+  const cookieStr = await getCookieString('https://www.acfun.cn/');
+
+  const headers = {
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'accept-language': 'zh-CN,zh;q=0.9',
+    'cache-control': 'no-cache',
+    'pragma': 'no-cache',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': 'none',
+    'sec-fetch-user': '?1',
+    'upgrade-insecure-requests': '1',
+    'User-Agent': COMMON_HEADERS['User-Agent'],
+    'Cookie': cookieStr,
+  };
+
+  console.log(`\n🎯 个人空间请求 - URL: ${url}`);
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      method: 'GET',
+      hostname,
+      path: pathname,
+      headers: headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const html = Buffer.concat(chunks).toString('utf8');
+        console.log(`📋 个人空间响应: ${res.statusCode}`);
+        if (res.statusCode === 200) {
+          resolve({ success: true, html: html });
+        } else {
+          resolve({ success: false, error: `HTTP ${res.statusCode}` });
+        }
+      });
+    });
+    req.on('error', (e) => {
+      resolve({ success: false, error: e.message });
+    });
+    req.end();
+  });
+}
+
+function openVideoWindow(videoId) {
+  const videoWindow = new BrowserWindow({
+    width: 1200,
+    height: 700,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  videoWindow.loadFile(path.join(__dirname, 'video.html'), {
+    query: { video: JSON.stringify({ videoId: videoId }) }
+  });
+}
+
+ipcMain.handle('get-space-page', async () => {
+  const result = await getSpacePage();
+  return result;
+});
+
+ipcMain.handle('open-space', async () => {
+  const spaceWindow = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  spaceWindow.loadFile(path.join(__dirname, 'space.html'));
+
+  spaceWindow.webContents.on('will-navigate', (event, url) => {
+    const match = url.match(/https:\/\/www\.acfun\.cn\/v\/ac(\d+)/);
+    if (match) {
+      event.preventDefault();
+      const videoId = match[1];
+      console.log(`🎬 拦截视频链接: ac${videoId}`);
+      openVideoWindow(videoId);
+    }
+  });
+
+  spaceWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const match = url.match(/https:\/\/www\.acfun\.cn\/v\/ac(\d+)/);
+    if (match) {
+      const videoId = match[1];
+      console.log(`🎬 拦截视频新窗口: ac${videoId}`);
+      openVideoWindow(videoId);
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
+  });
+
+  spaceWindow.webContents.session.webRequest.onBeforeRequest((details, callback) => {
+    const match = details.url.match(/https:\/\/www\.acfun\.cn\/v\/ac(\d+)/);
+    if (match) {
+      console.log(`🎬 WebRequest拦截视频请求: ac${match[1]}`);
+      openVideoWindow(match[1]);
+      callback({ cancel: true });
+    } else {
+      callback({ cancel: false });
+    }
+  });
+
+  return true;
+});
+
 // ==================== 调试信息转发 ====================
 
-// 接收视频页面的调试信息
 ipcMain.on('video-debug-info', (event, info) => {
   console.log('📱 视频页面调试信息:', info);
-  
-  // 获取所有窗口
   const windows = BrowserWindow.getAllWindows();
   windows.forEach(window => {
     if (window.webContents.getURL().includes('index.html')) {
-      // 向index.html发送调试信息
       window.webContents.send('debug-info', info);
     }
   });
@@ -735,6 +1415,18 @@ ipcMain.handle('open-video', async (event, video) => {
   });
 
   return true;
+});
+
+// 调试：跳转到指定视频
+ipcMain.handle('goto-video', async (event, videoId) => {
+  if (videoId.startsWith('ac')) {
+    videoId = videoId.substring(2);
+  }
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window) {
+    window.webContents.send('goto-video', videoId);
+  }
+  return { success: true, videoId: videoId };
 });
 
 const createWindow = () => {
